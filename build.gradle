@@ -1,0 +1,130 @@
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'maven-publish'
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+}
+
+group = mod_group_id
+version = mod_version
+base {
+    archivesName = "${mod_id}-${minecraft_version}"
+}
+
+java {
+    toolchain.languageVersion = JavaLanguageVersion.of(17)
+}
+
+minecraft {
+    mappings channel: mapping_channel, version: mapping_version
+    copyIdeResources = true
+
+    runs {
+        configureEach {
+            workingDirectory project.file('run')
+            property 'forge.logging.console.level', 'info'
+            mods {
+                vehiclecatalog {
+                    source sourceSets.main
+                }
+            }
+        }
+        client {}
+        server {
+            args '--nogui'
+        }
+    }
+}
+
+repositories {
+    flatDir {
+        dirs '../fcp/libs', '../fcp/ashv', '../fcp/build/libs'
+    }
+}
+
+dependencies {
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+    runtimeOnly fg.deobf("local:superbwarfare:${superbwarfare_version}")
+    runtimeOnly fg.deobf("local:ashvehicle:${ashvehicle_version}")
+    runtimeOnly fg.deobf("local:fcp:${fcp_version}")
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+}
+
+tasks.named('processResources', ProcessResources).configure {
+    inputs.properties([
+        mod_id      : mod_id,
+        mod_name    : mod_name,
+        mod_version : mod_version,
+        mod_authors : mod_authors,
+        mod_license : mod_license,
+        sbw_version_range: sbw_version_range
+    ])
+
+    filesMatching('META-INF/mods.toml') {
+        expand([
+            mod_id     : mod_id,
+            mod_name   : mod_name,
+            mod_version: mod_version,
+            mod_authors: mod_authors,
+            mod_license: mod_license,
+            sbw_version_range: sbw_version_range
+        ])
+    }
+}
+
+def sbwVariants = [
+        '0.8.8'  : '[0.8.8]',
+        '0.8.9'  : '[0.8.9]',
+        '0.8.9.1': '[0.8.9.1]',
+        '0.8.9.2': '[0.8.9.2]'
+]
+
+def sbwVariantTasks = []
+sbwVariants.each { sbwVersion, versionRange ->
+    def taskSuffix = sbwVersion.replace('.', '')
+    def metadataTask = tasks.register("generateSbw${taskSuffix}ModsToml") {
+        dependsOn tasks.named('processResources')
+        def outputFile = layout.buildDirectory.file(
+                "generated/sbwVariants/${sbwVersion}/META-INF/mods.toml")
+        outputs.file(outputFile)
+
+        doLast {
+            def processedModsToml = layout.buildDirectory
+                    .file('resources/main/META-INF/mods.toml').get().asFile
+            def contents = processedModsToml.getText('UTF-8')
+            def matcher = contents =~ /(?m)(modId="superbwarfare"\r?\nmandatory=true\r?\nversionRange=")[^"]+(")/
+            if (!matcher.find()) {
+                throw new GradleException("Could not find the SuperbWarfare dependency in mods.toml")
+            }
+            contents = matcher.replaceFirst(
+                    java.util.regex.Matcher.quoteReplacement(
+                            "modId=\"superbwarfare\"\nmandatory=true\nversionRange=\"${versionRange}\""))
+
+            def target = outputFile.get().asFile
+            target.parentFile.mkdirs()
+            target.setText(contents, 'UTF-8')
+        }
+    }
+
+    def variantTask = tasks.register("buildForSbw${taskSuffix}", Jar) {
+        dependsOn tasks.named('reobfJar'), metadataTask
+        archiveFileName = "${mod_id}-${minecraft_version}-for-sbw-${sbwVersion}.jar"
+        destinationDirectory = layout.buildDirectory.dir("sbw-versions/${sbwVersion}")
+        from(zipTree(layout.buildDirectory.file('reobfJar/output.jar'))) {
+            exclude 'META-INF/mods.toml'
+        }
+        from(metadataTask) {
+            into 'META-INF'
+        }
+    }
+    sbwVariantTasks.add(variantTask)
+}
+
+tasks.register('buildSbwVariants') {
+    group = 'build'
+    description = 'Builds separate catalog JARs for SuperbWarfare 0.8.8, 0.8.9, 0.8.9.1, and 0.8.9.2.'
+    dependsOn sbwVariantTasks
+}
